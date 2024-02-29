@@ -2,21 +2,19 @@ package main
 
 import (
 	"bytes"
-	"context"
+	"errors"
 	"fmt"
 	"github.com/alexmullins/zip"
 	"github.com/gin-gonic/gin"
 	"github.com/jinzhu/gorm"
 	_ "github.com/jinzhu/gorm/dialects/postgres"
 	"github.com/joho/godotenv"
-	"github.com/kurin/blazer/b2"
 	"github.com/tealeg/xlsx"
 	"io"
-	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
-	"reflect"
+	// "reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -44,73 +42,32 @@ func main() {
 
 	r.GET("/download-excel/:database/:yearmonth/:table", handleDownloadExcelZip)
 
-	r.GET("/:type/:yearmonth/:app", handleGetFilesGenerateMerge)
+	// r.GET("/:type/:yearmonth/:app", handleGetFilesGenerateMerge)
 
 	r.Run(fmt.Sprintf(":%d", port))
 }
 
 func handleDownloadExcelZip(c *gin.Context) {
-    database := c.Param("database")
-    yearmonth := c.Param("yearmonth")
-    batchSize := c.Query("batchSize")
+	database := c.Param("database")
+	yearmonth := c.Param("yearmonth")
+	batchSize := c.Query("batchSize")
 
-    // Inisialisasi koneksi ke Backblaze B2
-    ctx := context.Background()
-    b2c, err := b2.NewClient(ctx, "YOUR_ACCOUNT_ID", "YOUR_APPLICATION_KEY")
-    if err != nil {
-        handleError("Error saat membuat klien Backblaze B2:", err, c, nil, "")
-        return
-    }
+	// Nama file zip yang akan diunduh
+	zipFilename := fmt.Sprintf("%s_%s_%s.zip", batchSize, database, yearmonth)
 
-    // Buat objek klien Bucket
-    bucket, err := b2c.NewBucket(ctx, "files-management", nil)
-    if err != nil {
-        handleError("Error saat membuat bucket Backblaze B2:", err, c, nil, "")
-        return
-    }
+	// Path tempat menyimpan file zip yang diunduh
+	localPath := filepath.Join("/path/to/save", zipFilename)
 
-    // Nama file zip yang akan diunduh
-    zipFilename := fmt.Sprintf("%s_%s_%s.zip", batchSize, database, yearmonth)
+	// Buka file untuk menyimpan hasil unduhan
+	localFile, err := os.Open(localPath)
+	if err != nil {
+		handleError("Error saat membuka file lokal:", err, c)
+		return
+	}
+	defer localFile.Close()
 
-    // Path tempat menyimpan file zip yang diunduh
-    localPath := filepath.Join("/path/to/save", zipFilename)
-
-    // Dapatkan URL unduhan dengan menggunakan fungsi GetDownloadAuthorization
-    downloadAuth, err := bucket.Download(ctx, zipFilename)
-    if err != nil {
-        handleError("Error saat mendapatkan otorisasi unduhan dari Backblaze B2:", err, c, nil, "")
-        return
-    }
-
-    downloadURL := downloadAuth.URL
-
-    // Lakukan unduhan menggunakan HTTP client biasa
-    resp, err := http.Get(downloadURL)
-    if err != nil {
-        handleError("Error saat melakukan unduhan:", err, c, nil, "")
-        return
-    }
-    defer resp.Body.Close()
-
-    // Buka file untuk menyimpan hasil unduhan
-    localFile, err := os.Create(localPath)
-    if err != nil {
-        handleError("Error saat membuka file lokal:", err, c, nil, "")
-        return
-    }
-    defer localFile.Close()
-
-    // Salin isi unduhan ke file lokal
-    _, err = io.Copy(localFile, resp.Body)
-    if err != nil {
-        handleError("Error saat menyalin isi file:", err, c, nil, "")
-        return
-    }
-
-    fmt.Printf("File ZIP %s berhasil diunduh ke %s\n", zipFilename, localPath)
-
-    // Berikan file yang diunduh kepada pengguna sebagai respons
-    c.File(localPath)
+	// Berikan file yang diunduh kepada pengguna sebagai respons
+	c.File(localPath)
 }
 
 func handleGenerateExcelZip(c *gin.Context) {
@@ -120,6 +77,14 @@ func handleGenerateExcelZip(c *gin.Context) {
 	batchSize := c.Query("batchSize")
 	dirpath := fmt.Sprintf("%s_%s_%s", batchSize, database, yearmonth)
 	filename := fmt.Sprintf("data_%s_%s", database, yearmonth)
+	zipFilename := fmt.Sprintf("%s_%s_%s.zip", batchSize, database, yearmonth)
+
+	// Membuat folder baru jika belum ada
+	err := createDirectoryIfNotExist("./feedback/" + dirpath)
+	if err != nil {
+		handleError("Error creating directory:", err, c)
+		return
+	}
 
 	var sequelizeInstance *gorm.DB
 
@@ -182,7 +147,7 @@ func handleGenerateExcelZip(c *gin.Context) {
 
 		// Periksa apakah koneksi ke database telah berhasil di dalam goroutine
 		if sequelizeInstance == nil {
-			handleError("Gagal menginisialisasi koneksi database.", nil, c, nil, "")
+			handleError("Gagal menginisialisasi koneksi database.", nil, c)
 			resultCh <- errors.New("Gagal menginisialisasi koneksi database.")
 			return
 		}
@@ -224,7 +189,7 @@ func handleGenerateExcelZip(c *gin.Context) {
 				// Inisialisasi variabel rows di dalam goroutine
 				rows, err := sequelizeInstance.Raw(query).Rows()
 				if err != nil {
-					handleError("Error saat mengambil data dari database:", nil, c, nil, "")
+					handleError("Error saat mengambil data dari database:", nil, c)
 					return
 				}
 				defer rows.Close() // Tutup rows pada akhir loop
@@ -241,7 +206,7 @@ func handleGenerateExcelZip(c *gin.Context) {
 				file := xlsx.NewFile()
 				sheet, err := file.AddSheet("Data")
 				if err != nil {
-					handleError("Error saat menambahkan lembar ke file Excel:", err, c, nil, "")
+					handleError("Error saat menambahkan lembar ke file Excel:", err, c)
 					return
 				}
 
@@ -261,7 +226,7 @@ func handleGenerateExcelZip(c *gin.Context) {
 					}
 
 					if err := rows.Scan(values...); err != nil {
-						handleError("Error saat memindai baris:", err, c, nil, "")
+						handleError("Error saat memindai baris:", err, c)
 						return
 					}
 
@@ -277,7 +242,7 @@ func handleGenerateExcelZip(c *gin.Context) {
 				// Simpan file Excel ke dalam zip archive di memori di dalam goroutine
 				excelBuffer := new(bytes.Buffer)
 				if err := file.Write(excelBuffer); err != nil {
-					handleError("Error saat menyimpan file Excel ke buffer:", err, c, nil, "")
+					handleError("Error saat menyimpan file Excel ke buffer:", err, c)
 					return
 				}
 
@@ -287,12 +252,12 @@ func handleGenerateExcelZip(c *gin.Context) {
 				}
 				writer, err := zipWriter.CreateHeader(fileHeader)
 				if err != nil {
-					handleError("Error saat membuat header zip:", err, c, nil, "")
+					handleError("Error saat membuat header zip:", err, c)
 					return
 				}
 				_, err = writer.Write(excelBuffer.Bytes())
 				if err != nil {
-					handleError("Error saat menulis file Excel ke dalam zip archive:", err, c, nil, "")
+					handleError("Error saat menulis file Excel ke dalam zip archive:", err, c)
 					return
 				}
 
@@ -308,67 +273,26 @@ func handleGenerateExcelZip(c *gin.Context) {
 		// Tutup zip archive di memori ketika semua batch selesai diproses di dalam goroutine
 		wg.Wait()
 		if err := zipWriter.Close(); err != nil {
-			handleError("Error saat menutup zip archive:", err, c, nil, "")
+			handleError("Error saat menutup zip archive:", err, c)
 			resultCh <- err
 			return
 		}
 
-		// Unggah zip archive di memori ke Backblaze B2 di dalam goroutine
-		ctx := context.Background()
-		b2c, err := b2.NewClient(ctx, "005e5a1b4a267b30000000001", "K005Vlb42qTganKSM2D9cvCqYZqas9A")
-		if err != nil {
-			handleError("Error saat membuat klien Backblaze B2:", err, c, nil, "")
+		// Create ZIP file locally
+		dirpath := fmt.Sprintf("feedback/%s_%s_%s", batchSize, database, yearmonth)
+		destinationPath := dirpath // Ganti dengan direktori penyimpanan lokal yang diinginkan
+
+		if err := createZip(dirpath, destinationPath); err != nil {
+			handleError("Error creating ZIP file locally:", err, c)
 			resultCh <- err
 			return
 		}
 
-		bucket, err := b2c.NewBucket(ctx, "files-management", nil)
-		if err != nil {
-			handleError("Error saat membuat bucket Backblaze B2:", err, c, nil, "")
-			resultCh <- err
-			return
-		}
+		fmt.Printf("File ZIP %s berhasil dibuat di %s\n", zipFilename, destinationPath)
 
-		obj := bucket.Object("files-redines/" + dirpath + ".zip")
-		w := obj.NewWriter(ctx)
-		_, err = io.Copy(w, zipBuffer)
-		if err != nil {
-			handleError("Error saat mengunggah file ZIP ke Backblaze B2:", err, c, nil, "")
-			resultCh <- err
-			return
-		}
-
-		if err := w.Close(); err != nil {
-			handleError("Error saat menutup penulis Backblaze B2:", err, c, nil, "")
-			resultCh <- err
-			return
-		}
-		updateQuery := fmt.Sprintf(`
-			UPDATE dashboard.files_redines
-			SET is_process = false
-			WHERE yearmonth = '%s';
-		`, yearmonth)
-
-		// Eksekusi query dan tangani kesalahan jika ada
-		if err := sequelizeInstance.Exec(updateQuery).Error; err != nil {
-			handleError("Error saat mengeksekusi query update:", err, c, nil, "")
-			resultCh <- err
-			return
-		}
-
-		fmt.Println("File ZIP berhasil dibuat dan diunggah di dalam goroutine.")
-
-		// Hapus folder lokal setelah berhasil diunggah di dalam goroutine
-		if err := os.RemoveAll(dirpath); err != nil {
-			fmt.Println("Error saat menghapus folder lokal di dalam goroutine:", err)
-			// Tangani kesalahan jika diperlukan, misalnya, log
-		}
-
-		// Tandai bahwa proses di latar belakang telah selesai di dalam goroutine
+		// Berikan respons bahwa proses selesai
 		resultCh <- nil
 	}()
-
- 
 
 	// Return success response to the frontend
 	c.JSON(http.StatusOK, gin.H{
@@ -377,13 +301,21 @@ func handleGenerateExcelZip(c *gin.Context) {
 	})
 }
 
+func createDirectoryIfNotExist(path string) error {
+    // Check if the directory exists
+    if _, err := os.Stat(path); os.IsNotExist(err) {
+        // Create the directory if it does not exist
+        if err := os.MkdirAll(path, os.ModePerm); err != nil {
+            return err
+        }
+    }
+    return nil
+}
 
 
-func handleError(message string, err error, c *gin.Context, zipBuffer *bytes.Buffer, dirpath string) {
+func handleError(message string, err error, c *gin.Context) {
     fmt.Println(message, err)
     c.String(http.StatusInternalServerError, "Internal Server Error")
-	_ = dirpath
-	_ = zipBuffer
 }
 
 
@@ -642,233 +574,248 @@ func getColumnsForSPSAPI(table string) []string {
 	return columns
 }
 
-func createZip(ctx context.Context, b2c *b2.Client, bucket *b2.Bucket, sourceDir, destinationPath string) error {
-    archive := zip.NewWriter(io.Writer(nil)) // Buat arsip zip di dalam memori
-
-    if err := filepath.Walk(sourceDir, func(filePath string, info os.FileInfo, err error) error {
-        if err != nil {
-            return err
-        }
-
-        header, err := zip.FileInfoHeader(info)
-        if err != nil {
-            return err
-        }
-        header.Method = zip.Deflate
-
-        // Sesuaikan nama header untuk mencakup jalur tujuan yang diinginkan dalam bucket
-        header.Name, err = filepath.Rel(sourceDir, filePath)
-        if err != nil {
-            return err
-        }
-        header.Name = filepath.Join(destinationPath, header.Name)
-
-        if info.IsDir() {
-            header.Name += "/"
-        }
-
-        writer, err := archive.CreateHeader(header)
-        if err != nil {
-            return err
-        }
-
-        if !info.IsDir() {
-            file, err := os.Open(filePath)
-            if err != nil {
-                return err
-            }
-            defer file.Close()
-            _, err = io.Copy(writer, file)
-        }
-
-        return err
-    }); err != nil {
-        return err
-    }
-
-    // Unggah arsip zip di dalam memori ke Backblaze B2
-    obj := bucket.Object(filepath.Join(destinationPath, "example.zip"))
-    w := obj.NewWriter(ctx)
-    if err := archive.Flush(); err != nil {
-        return err
-    }
-
-    if err := w.Close(); err != nil {
-        return err
-    }
-
-    return nil
-}
-
-func handleGetFilesGenerateMerge(c *gin.Context) {
-	yearmonth := c.Param("yearmonth")
-	app := c.Param("app")
-	product := c.Param("app")[:2]
-	table := c.Param("type")
-
-	// Initialize the Sequelize instance based on the app parameter
-	var sequelizeInstance *gorm.DB
-	switch app {
-	case "AFI":
-		sequelizeInstance = initializeDatabase("DB_CONNECTION_ATOME")
-	case "KPI":
-		sequelizeInstance = initializeDatabase("DB_CONNECTION_ATOME")
-	case "SPL":
-		sequelizeInstance = initializeDatabase("DB_CONNECTION_SPL")
-	case "SPJ":
-		sequelizeInstance = initializeDatabase("DB_CONNECTION_SPJ")
-	case "FLE":
-		sequelizeInstance = initializeDatabase("DB_CONNECTION_FLEXI")
-	default:
-		sequelizeInstance = db
+func createZip(dirpath, destinationPath string) error {
+	// Buat file ZIP di lokal
+	zipFilename := filepath.Join(destinationPath, ".zip")
+	zipFile, err := os.Create(zipFilename)
+	if err != nil {
+		return err
 	}
+	defer zipFile.Close()
 
-	if sequelizeInstance == nil {
-		fmt.Println("Failed to initialize database connection.")
-		c.String(http.StatusInternalServerError, "Internal Server Error")
-		return
-	}
-	defer func() {
-		if err := sequelizeInstance.Close(); err != nil {
-			fmt.Println("Error closing database connection:", err)
+	archive := zip.NewWriter(zipFile)
+	defer archive.Close()
+
+	// Fungsi untuk menambahkan file dan folder ke dalam ZIP
+	var addFilesToZip func(folder, path string) error
+	addFilesToZip = func(folder, path string) error {
+		files, err := os.ReadDir(path)
+		if err != nil {
+			return err
 		}
-	}()
 
-	var desiredColumns []string
-	switch app {
-	case "AFI":
-		desiredColumns = getColumnsForAtome(table)
-	case "KPI":
-		desiredColumns = getColumnsForAtome(table)
-	case "SPL":
-		desiredColumns = getColumnsForSPL(table)
-	case "SPJ":
-		desiredColumns = getColumnsForSPJ(table)
-	case "FLE":
-		desiredColumns = getColumnsForSPSAPI(table)
-	default:
-		// Fallback desired columns if the app is not recognized
-		desiredColumns = getColumnsForSPL(table)
-	}
+		for _, file := range files {
+			filePath := filepath.Join(path, file.Name())
 
-	columns := strings.Join(desiredColumns, ", ")
-	var query string
-
-	if app == "SPL" || app == "SPJ" || app == "FLE" {
-		query = fmt.Sprintf(`
-            SELECT %s
-            FROM dashboard.%s
-            WHERE yearmonth = '%s'
-        `, columns, table, yearmonth)
-	} else {
-		query = fmt.Sprintf(`
-            SELECT %s
-            FROM dashboard.%s
-            WHERE yearmonth = '%s'
-            AND product LIKE '%s%%'
-            AND status = 'Approved'
-        `, columns, table, yearmonth, product)
-	}
-
-	var rawData []map[string]interface{}
-	if err := sequelizeInstance.Raw(query).Find(&rawData).Error; err != nil {
-		fmt.Println("Error querying database:", err)
-		c.String(http.StatusInternalServerError, "Internal Server Error")
-		return
-	}
-
-	dirpath := fmt.Sprintf("%s/%s", app, yearmonth)
-
-	if err := os.MkdirAll(dirpath, os.ModePerm); err != nil {
-		fmt.Println("Error creating directory:", err)
-		c.String(http.StatusInternalServerError, "Internal Server Error")
-		return
-	}
-
-	if len(rawData) > 0 {
-		batchSize := 1000000
-		startOffset := 0
-		batchNumber := 1
-
-		var shouldExit bool
-
-		for !shouldExit {
-			filename := fmt.Sprintf("%s_%d_Registration_%s.xlsx", app, batchNumber, yearmonth)
-			filenameWithTable := fmt.Sprintf("%s/%s", dirpath, filename)
-
-			keys := reflect.ValueOf(rawData[0]).MapKeys()
-			file := xlsx.NewFile()
-			sheet, err := file.AddSheet("Data")
-			if err != nil {
-				fmt.Println("Error adding sheet to Excel file:", err)
-				c.String(http.StatusInternalServerError, "Internal Server Error")
-				return
-			}
-
-			// Add header
-			headerRow := sheet.AddRow()
-			for _, col := range keys {
-				cell := headerRow.AddCell()
-				cell.Value = col.String()
-			}
-
-			// Add data rows
-			for i := startOffset; i < startOffset+batchSize && i < len(rawData); i++ {
-				dataRow := sheet.AddRow()
-				for _, col := range keys {
-					cell := dataRow.AddCell()
-					// Convert value to string before adding to Excel cell
-					cell.Value = fmt.Sprintf("%v", rawData[i][col.String()])
+			if file.IsDir() {
+				// Rekursif tambahkan folder
+				if err := addFilesToZip(filepath.Join(folder, file.Name()), filePath); err != nil {
+					return err
 				}
+				continue
 			}
 
-			if err := file.Save(filenameWithTable); err != nil {
-				fmt.Println("Error saving Excel file:", err)
-				c.String(http.StatusInternalServerError, "Internal Server Error")
-				return
+			fileToAdd, err := os.Open(filePath)
+			if err != nil {
+				return err
+			}
+			defer fileToAdd.Close()
+
+			// Dapatkan informasi file
+			fileInfo, err := fileToAdd.Stat()
+			if err != nil {
+				return err
 			}
 
-			fmt.Printf("Data telah diekspor ke %s\n", filename)
+			// Buat header untuk file dalam ZIP
+			fileHeader, err := zip.FileInfoHeader(fileInfo)
+			if err != nil {
+				return err
+			}
+			fileHeader.Name = filepath.Join(folder, file.Name())
 
-			// Increment startOffset and batchNumber for the next batch
-			startOffset += batchSize
-			batchNumber++
+			// Tambahkan file ke dalam ZIP
+			fileWriter, err := archive.CreateHeader(fileHeader)
+			if err != nil {
+				return err
+			}
 
-			if startOffset >= len(rawData) {
-				shouldExit = true
+			if _, err = io.Copy(fileWriter, fileToAdd); err != nil {
+				return err
 			}
 		}
 
-		// Inisialisasi variabel ctx, b2c, dan bucket
-		ctx := context.Background()
-		b2c, err := b2.NewClient(ctx, "005e5a1b4a267b30000000001", "K005Vlb42qTganKSM2D9cvCqYZqas9A")
-		if err != nil {
-			fmt.Println("Error creating Backblaze B2 client:", err)
-			c.String(http.StatusInternalServerError, "Internal Server Error")
-			return
-		}
-
-		bucket, err := b2c.NewBucket(ctx, "files-management", nil)
-		if err != nil {
-			fmt.Println("Error creating Backblaze B2 bucket:", err)
-			c.String(http.StatusInternalServerError, "Internal Server Error")
-			return
-		}
-
-		destinationPath := "files-redines/"
-
-		if err := createZip(ctx, b2c, bucket, dirpath, destinationPath); err != nil {
-			fmt.Println("Error creating ZIP file:", err)
-			c.String(http.StatusInternalServerError, "Internal Server Error")
-			return
-		}
-
-		fmt.Println("File ZIP berhasil dibuat.")
-
-		fmt.Println("Tidak ada data yang memenuhi kriteria.")
-		c.JSON(http.StatusOK, gin.H{
-			"status":  false,
-			"message": "No data found for the given criteria.",
-		})
+		return nil
 	}
+
+	// Panggil fungsi untuk menambahkan file dari direktori sumber
+	if err := addFilesToZip("", dirpath); err != nil {
+		return err
+	}
+
+	return nil
 }
+
+
+// func handleGetFilesGenerateMerge(c *gin.Context) {
+// 	yearmonth := c.Param("yearmonth")
+// 	app := c.Param("app")
+// 	product := c.Param("app")[:2]
+// 	table := c.Param("type")
+
+// 	// Initialize the Sequelize instance based on the app parameter
+// 	var sequelizeInstance *gorm.DB
+// 	switch app {
+// 	case "AFI":
+// 		sequelizeInstance = initializeDatabase("DB_CONNECTION_ATOME")
+// 	case "KPI":
+// 		sequelizeInstance = initializeDatabase("DB_CONNECTION_ATOME")
+// 	case "SPL":
+// 		sequelizeInstance = initializeDatabase("DB_CONNECTION_SPL")
+// 	case "SPJ":
+// 		sequelizeInstance = initializeDatabase("DB_CONNECTION_SPJ")
+// 	case "FLE":
+// 		sequelizeInstance = initializeDatabase("DB_CONNECTION_FLEXI")
+// 	default:
+// 		sequelizeInstance = db
+// 	}
+
+// 	if sequelizeInstance == nil {
+// 		fmt.Println("Failed to initialize database connection.")
+// 		c.String(http.StatusInternalServerError, "Internal Server Error")
+// 		return
+// 	}
+// 	defer func() {
+// 		if err := sequelizeInstance.Close(); err != nil {
+// 			fmt.Println("Error closing database connection:", err)
+// 		}
+// 	}()
+
+// 	var desiredColumns []string
+// 	switch app {
+// 	case "AFI":
+// 		desiredColumns = getColumnsForAtome(table)
+// 	case "KPI":
+// 		desiredColumns = getColumnsForAtome(table)
+// 	case "SPL":
+// 		desiredColumns = getColumnsForSPL(table)
+// 	case "SPJ":
+// 		desiredColumns = getColumnsForSPJ(table)
+// 	case "FLE":
+// 		desiredColumns = getColumnsForSPSAPI(table)
+// 	default:
+// 		// Fallback desired columns if the app is not recognized
+// 		desiredColumns = getColumnsForSPL(table)
+// 	}
+
+// 	columns := strings.Join(desiredColumns, ", ")
+// 	var query string
+
+// 	if app == "SPL" || app == "SPJ" || app == "FLE" {
+// 		query = fmt.Sprintf(`
+//             SELECT %s
+//             FROM dashboard.%s
+//             WHERE yearmonth = '%s'
+//         `, columns, table, yearmonth)
+// 	} else {
+// 		query = fmt.Sprintf(`
+//             SELECT %s
+//             FROM dashboard.%s
+//             WHERE yearmonth = '%s'
+//             AND product LIKE '%s%%'
+//             AND status = 'Approved'
+//         `, columns, table, yearmonth, product)
+// 	}
+
+// 	var rawData []map[string]interface{}
+// 	if err := sequelizeInstance.Raw(query).Find(&rawData).Error; err != nil {
+// 		fmt.Println("Error querying database:", err)
+// 		c.String(http.StatusInternalServerError, "Internal Server Error")
+// 		return
+// 	}
+
+// 	dirpath := fmt.Sprintf("%s/%s", app, yearmonth)
+
+// 	if err := os.MkdirAll(dirpath, os.ModePerm); err != nil {
+// 		fmt.Println("Error creating directory:", err)
+// 		c.String(http.StatusInternalServerError, "Internal Server Error")
+// 		return
+// 	}
+
+// 	if len(rawData) > 0 {
+// 		batchSize := 1000000
+// 		startOffset := 0
+// 		batchNumber := 1
+
+// 		var shouldExit bool
+
+// 		for !shouldExit {
+// 			filename := fmt.Sprintf("%s_%d_Registration_%s.xlsx", app, batchNumber, yearmonth)
+// 			filenameWithTable := fmt.Sprintf("%s/%s", dirpath, filename)
+
+// 			keys := reflect.ValueOf(rawData[0]).MapKeys()
+// 			file := xlsx.NewFile()
+// 			sheet, err := file.AddSheet("Data")
+// 			if err != nil {
+// 				fmt.Println("Error adding sheet to Excel file:", err)
+// 				c.String(http.StatusInternalServerError, "Internal Server Error")
+// 				return
+// 			}
+
+// 			// Add header
+// 			headerRow := sheet.AddRow()
+// 			for _, col := range keys {
+// 				cell := headerRow.AddCell()
+// 				cell.Value = col.String()
+// 			}
+
+// 			// Add data rows
+// 			for i := startOffset; i < startOffset+batchSize && i < len(rawData); i++ {
+// 				dataRow := sheet.AddRow()
+// 				for _, col := range keys {
+// 					cell := dataRow.AddCell()
+// 					// Convert value to string before adding to Excel cell
+// 					cell.Value = fmt.Sprintf("%v", rawData[i][col.String()])
+// 				}
+// 			}
+
+// 			if err := file.Save(filenameWithTable); err != nil {
+// 				fmt.Println("Error saving Excel file:", err)
+// 				c.String(http.StatusInternalServerError, "Internal Server Error")
+// 				return
+// 			}
+
+// 			fmt.Printf("Data telah diekspor ke %s\n", filename)
+
+// 			// Increment startOffset and batchNumber for the next batch
+// 			startOffset += batchSize
+// 			batchNumber++
+
+// 			if startOffset >= len(rawData) {
+// 				shouldExit = true
+// 			}
+// 		}
+
+// 		// Inisialisasi variabel ctx, b2c, dan bucket
+// 		ctx := context.Background()
+// 		b2c, err := b2.NewClient(ctx, "005e5a1b4a267b30000000001", "K005Vlb42qTganKSM2D9cvCqYZqas9A")
+// 		if err != nil {
+// 			fmt.Println("Error creating Backblaze B2 client:", err)
+// 			c.String(http.StatusInternalServerError, "Internal Server Error")
+// 			return
+// 		}
+
+// 		bucket, err := b2c.NewBucket(ctx, "files-management", nil)
+// 		if err != nil {
+// 			fmt.Println("Error creating Backblaze B2 bucket:", err)
+// 			c.String(http.StatusInternalServerError, "Internal Server Error")
+// 			return
+// 		}
+
+// 		destinationPath := "files-redines/"
+
+// 		if err := createZip(ctx, b2c, bucket, dirpath, destinationPath); err != nil {
+// 			fmt.Println("Error creating ZIP file:", err)
+// 			c.String(http.StatusInternalServerError, "Internal Server Error")
+// 			return
+// 		}
+
+// 		fmt.Println("File ZIP berhasil dibuat.")
+
+// 		fmt.Println("Tidak ada data yang memenuhi kriteria.")
+// 		c.JSON(http.StatusOK, gin.H{
+// 			"status":  false,
+// 			"message": "No data found for the given criteria.",
+// 		})
+// 	}
+// }
