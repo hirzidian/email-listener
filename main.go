@@ -45,6 +45,8 @@ func main() {
 	r.Run(fmt.Sprintf(":%d", port))
 }
 
+
+
 func handleDownloadExcelZip(c *gin.Context) {
 	database := c.Param("database")
 	yearmonth := c.Param("yearmonth")
@@ -59,7 +61,18 @@ func handleDownloadExcelZip(c *gin.Context) {
 	capsLockDB := strings.ToUpper(database)
 
 	dirPath := batchSize + "_" + database + "_" + yearmonth
-	fileName := status + "_" + table + "_" + database + "_" + yearmonth + ".zip"
+
+	var fileName string
+	if table == "summary_production" {
+		fileName = capsLockDB + "_policy_Registration_" + yearmonth + ".zip"
+	} else if table == "summary_claim" {
+		fileName = capsLockDB + "_claim_Registration_" + yearmonth + ".zip"
+	} else if table == "summary_explore" {
+		fileName = table + "_" + database + "_" + yearmonth + ".zip"
+	} else {
+		fileName = status + "_" + table + "_" + database + "_" + yearmonth + ".zip"
+	}
+
 	filePath := "feedback/" + capsLockDB + "/" + dirPath + "/" + fileName
 
 	c.Writer.Header().Add("Content-Disposition", fmt.Sprintf("attachment; filename=%s", fileName))
@@ -77,7 +90,21 @@ func handleGenerateExcelZip(c *gin.Context) {
 	capsLockDB := strings.ToUpper(c.Param("database"))
 
 	dirpath := fmt.Sprintf("feedback/%s/%s_%s_%s", capsLockDB, batchSize, database, yearmonth)
-	filename := fmt.Sprintf("%s_%s_%s_%s", status, table, database, yearmonth)
+
+	var filename string
+	var tbsummary string
+	if table == "summary_production" || table == "summary_claim" {
+		if table == "summary_production" {
+			tbsummary = "policy"
+		} else {
+			tbsummary = "claim"
+		}
+		filename = fmt.Sprintf("%s_%s_Registration_%s", capsLockDB, tbsummary, yearmonth)
+	} else if table == "summary_explore"{
+		filename = fmt.Sprintf("%s_%s_%s", table, database, yearmonth)
+	} else {
+		filename = fmt.Sprintf("%s_%s_%s_%s", status, table, database, yearmonth)
+	}
 
 	// Create a channel to receive the result of the background process
 	resultCh := make(chan error)
@@ -148,8 +175,7 @@ func handleGenerateExcelZip(c *gin.Context) {
 		startOffset := 0
 		batchNumber := 1
 		var shouldExit bool
-
-		fmt.Printf("Sedang Mengekspor Data %s_%s_%s_%s Ke EXCEL...\n", status, table, database, yearmonth)
+		fmt.Printf("Sedang Mengekspor Data %s Ke EXCEL...\n", filename)
 
 		// Buat file ZIP dalam memori di dalam goroutine
 		zipBuffer := new(bytes.Buffer)
@@ -171,6 +197,12 @@ func handleGenerateExcelZip(c *gin.Context) {
 				columns := strings.Join(desiredColumns, ", ")
 				var query string
 
+				allStatus := fmt.Sprintf(`
+					SELECT %s FROM dashboard.%s
+					WHERE yearmonth = '%s'
+					LIMIT %d OFFSET %d;
+				`, columns, table, yearmonth, batchSizeInt, startOffset)
+
 				var product string
 
 				if capsLockDB == "AFI" {
@@ -181,9 +213,11 @@ func handleGenerateExcelZip(c *gin.Context) {
 				// query jika database adalah spl atau spj
 				if database == "spl" || database == "spj" {
 					if localStatus == "All_Status" {
+						query = allStatus
+					} else if table == "summary_explore"{
 						query = fmt.Sprintf(`
 							SELECT %s FROM dashboard.%s
-							WHERE yearmonth = '%s'
+							WHERE policy_yearmonth = '%s'
 							LIMIT %d OFFSET %d;
 						`, columns, table, yearmonth, batchSizeInt, startOffset)
 					} else {
@@ -193,14 +227,10 @@ func handleGenerateExcelZip(c *gin.Context) {
 							LIMIT %d OFFSET %d;
 						`, columns, table, yearmonth, table, status, batchSizeInt, startOffset)
 					}
-				// query jika database adalah flexi
+					// query jika database adalah flexi
 				} else if database == "fle" {
 					if localStatus == "All_Status" {
-						query = fmt.Sprintf(`
-							SELECT %s FROM dashboard.%s
-							WHERE yearmonth = '%s'
-							LIMIT %d OFFSET %d;
-						`, columns, table, yearmonth, batchSizeInt, startOffset)
+						query = allStatus
 					} else if localStatus == "Not_Refunded" {
 						query = fmt.Sprintf(`
 							SELECT %s FROM dashboard.%s
@@ -220,7 +250,7 @@ func handleGenerateExcelZip(c *gin.Context) {
 							LIMIT %d OFFSET %d;
 						`, columns, table, yearmonth, status, batchSizeInt, startOffset)
 					}
-				// query jika database adalah kpi dan afi
+					// query jika database adalah kpi dan afi
 				} else {
 					if localStatus == "All_Status" {
 						query = fmt.Sprintf(`
@@ -228,6 +258,18 @@ func handleGenerateExcelZip(c *gin.Context) {
 							WHERE yearmonth = '%s' AND product LIKE '%s%%'
 							LIMIT %d OFFSET %d;
 						`, columns, table, yearmonth, product, batchSizeInt, startOffset)
+					} else if table == "summary_production" ||  table == "summary_claim" {
+						var statusAtome string
+						if table == "summary_production" {
+							statusAtome = "Approved"
+						} else {
+							statusAtome = "Proceed"
+						}
+						query = fmt.Sprintf(`
+							SELECT %s FROM dashboard.%s
+							WHERE yearmonth = '%s' AND product LIKE '%s%%' AND status  = '%s'
+							LIMIT %d OFFSET %d;
+						`, columns, tbsummary, yearmonth, product, statusAtome, batchSizeInt, startOffset)
 					} else {
 						query = fmt.Sprintf(`
 							SELECT %s FROM dashboard.%s
@@ -235,7 +277,6 @@ func handleGenerateExcelZip(c *gin.Context) {
 							LIMIT %d OFFSET %d;
 						`, columns, table, yearmonth, product, status, batchSizeInt, startOffset)
 					}
-
 
 				}
 				// Inisialisasi variabel rows di dalam goroutine
@@ -288,7 +329,7 @@ func handleGenerateExcelZip(c *gin.Context) {
 					cell.Value = fmt.Sprintf("%v", *value.(*interface{}))
 				}
 
-				rowIndex := 2
+				rowIndex := 1
 				for rows.Next() {
 					var values []interface{}
 					for range keys {
@@ -334,15 +375,13 @@ func handleGenerateExcelZip(c *gin.Context) {
 
 				fmt.Printf("Data telah diekspor ke %s\n", fileNameNew)
 
-				
 				// Tambahkan startOffset untuk batch berikutnya
 				startOffset += batchSizeInt
-				}(batchNumber, status)
-				
-				batchNumber++
-			}
-		fmt.Printf("Sedang Mengekspor %s_%s_%s_%s Ke ZIP...\n", status, table, database, yearmonth)
+			}(batchNumber, status)
 
+			batchNumber++
+		}
+		fmt.Printf("Sedang Mengekspor %s Ke ZIP...\n", filename)
 
 		if _, err := os.Stat(dirpath); os.IsNotExist(err) {
 			err := os.MkdirAll(dirpath, 0755)
@@ -379,7 +418,7 @@ func handleGenerateExcelZip(c *gin.Context) {
 			return
 		}
 
-		fmt.Printf("File ZIP %s_%s_%s_%s Berhasil Dibuat\n", status, table, database, yearmonth)
+		fmt.Printf("File ZIP %s Berhasil Dibuat\n", filename)
 
 		// Tandai bahwa proses di latar belakang telah selesai di dalam goroutine
 		resultCh <- nil
@@ -482,6 +521,29 @@ func getColumnsForAtome(table string) []string {
 			"load_id",
 			"main_product",
 		}
+	} else if table == "summary_production" {
+		columns = []string{
+			"policy_number",
+			"borrower",
+			"contract_number",
+			"submit_date",
+			"loan_start_date",
+			"loan_amount",
+			"rate",
+			"tenor",
+			"premium_amount",
+			"link_certificate",
+			"status",
+		}
+	} else if table == "summary_claim" {
+		columns = []string{
+			"loan_id",
+			"loan_amount",
+			"tenor",
+			"premium_amount",
+			"status",
+
+		}
 	}
 
 	return columns
@@ -551,6 +613,18 @@ func getColumnsForSPL(table string) []string {
 			"premium",
 			"url_sertifikat",
 		}
+	} else if table == "summary_explore"{
+		columns = []string{
+			"no_pk",
+			"nik",
+			"name",
+			"policy",
+			"claim",
+			"policy_yearmonth",
+			"claim_yearmonth",
+			"ltc_by_nik",
+		  }
+		  
 	}
 
 	return columns
@@ -619,6 +693,17 @@ func getColumnsForSPJ(table string) []string {
 			"paket_coverage",
 			"premium",
 			"url_sertifikat",
+		}
+	} else if table == "summary_explore"{
+		columns = []string{
+			"no_pk",
+			"nik",
+			"name",
+			"policy",
+			"claim",
+			"policy_yearmonth",
+			"claim_yearmonth",
+			"ltc_by_nik",
 		}
 	}
 	return columns
